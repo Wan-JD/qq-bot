@@ -132,19 +132,21 @@ class WorkBuddyBridge(Star):
     # 系统指令处理（以 / 开头，仅管理员）
     # ----------------------------------------------------------
 
-    def _build_style_panel(self) -> str:
+    def _build_style_panel(self, show_switch_hint: bool = True) -> str:
         """生成风格列表面板"""
         if not STYLE_LIST:
             return "没有找到任何风格预设，请检查 prompts/ 目录"
-        lines = [f"【风格切换面板】当前: {self._current_style}", ""]
+        title = "【风格切换面板】" if show_switch_hint else "【风格列表】"
+        lines = [f"{title}当前: {self._current_style}", ""]
         for i, s in enumerate(STYLE_LIST, 1):
             name = s.get("style_name", "")
             emoji = s.get("emoji", "")
             desc = s.get("description", "")
             marker = " ← 当前" if name == self._current_style else ""
             lines.append(f"  {i}. {emoji}{name} - {desc}{marker}")
-        lines.append("")
-        lines.append("回复序号或风格名切换，其他内容取消")
+        if show_switch_hint:
+            lines.append("")
+            lines.append("回复序号或风格名切换，其他内容取消")
         return "\n".join(lines)
 
     async def _handle_system_command(self, cmd: str, from_group: str = None) -> str | None:
@@ -163,9 +165,9 @@ class WorkBuddyBridge(Star):
             self._pending_action[TEST_ACCOUNT] = "style_switch"
             return self._build_style_panel()
 
-        # === /风格列表 ===
+        # === /风格列表（纯查看，不进等待状态） ===
         if action in ("风格列表", "列表", "styles", "list"):
-            return self._build_style_panel()
+            return self._build_style_panel(show_switch_hint=False)
 
         # === /当前风格 ===
         if action in ("当前风格", "当前", "now"):
@@ -450,6 +452,18 @@ class WorkBuddyBridge(Star):
         reply_id = self._parse_reply_id(raw_msg)
         target_group = from_group
 
+        # 私聊时支持指定群号：去群123456说xxx / 去群123456找xxx聊天
+        if not target_group:
+            group_in_cmd = re.match(r'(?:去|在)?群\s*(\d+)\s*(.*)', cmd)
+            if group_in_cmd:
+                matched_gid = group_in_cmd.group(1)
+                rest_cmd = group_in_cmd.group(2).strip()
+                if matched_gid in TARGET_GROUP_IDS:
+                    target_group = matched_gid
+                    cmd = rest_cmd  # 后续用去掉群号后的指令继续匹配
+                    if not cmd:
+                        return True
+
         # === 找xxx聊天 ===
         chat_match = re.search(r'(?:去|去和|去跟)?找\s*(.+?)\s*(?:聊天|说话|聊|说|扯淡|侃大山|唠嗑|搭话|聊两句)\s*[：:]*\s*(.*)', cmd)
         if chat_match:
@@ -588,8 +602,11 @@ class WorkBuddyBridge(Star):
         if re.search(r'(?:别理|忽略|不要理|拉黑|不理)', cmd):
             return True
 
-        # === 去群里说xxx ===
-        say_match = re.search(r'(?:去群里?|在群里|群里?)\s*(?:说|发|讲)?\s*(.+)', cmd)
+        # === 去群里说xxx / 说xxx（私聊指定群号时，群号已提取，直接匹配"说/发/讲"开头） ===
+        say_match = re.search(r'^(?:去群里?|在群里|群里?)\s*(?:说|发|讲)?\s*(.+)', cmd)
+        if not say_match and target_group:
+            # 私聊指定群号后，cmd可能是"说xxx"或直接是内容
+            say_match = re.match(r'^(?:说|发|讲)\s*(.+)', cmd)
         if say_match:
             if not target_group:
                 return True
