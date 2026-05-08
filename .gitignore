@@ -1,0 +1,25 @@
+# Dependencies
+__pycache__/
+*.pyc
+
+# API Key (keep local only)
+api_key.txt
+
+# AstrBot data (too large for repo)
+AstrBot/
+
+# NapCat (proprietary)
+NapCat/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Logs
+*.log
+logs/

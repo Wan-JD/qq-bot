@@ -1,0 +1,3 @@
+# 在此文件中填入你的 DeepSeek API Key
+# 获取地址: https://platform.deepseek.com/api_keys
+# 格式: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

@@ -1,0 +1,52 @@
+{
+  "network": {
+    "httpServers": [
+      {
+        "name": "HTTP-API",
+        "enable": true,
+        "host": "127.0.0.1",
+        "port": 3002,
+        "token": "",
+        "debug": false
+      }
+    ],
+    "httpSseServers": [],
+    "httpClients": [],
+    "websocketServers": [],
+    "websocketClients": [
+      {
+        "name": "AstrBot",
+        "enable": true,
+        "url": "ws://127.0.0.1:3001/ws/event",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "reconnectInterval": 5000,
+        "token": "",
+        "debug": false,
+        "heartInterval": 30000
+      },
+      {
+        "name": "AstrBot-API",
+        "enable": true,
+        "url": "ws://127.0.0.1:3001/ws/api",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "reconnectInterval": 5000,
+        "token": "",
+        "debug": false,
+        "heartInterval": 30000
+      }
+    ],
+    "plugins": []
+  },
+  "musicSignUrl": "",
+  "enableLocalFile2Url": false,
+  "parseMultMsg": false,
+  "imageDownloadProxy": "",
+  "timeout": {
+    "baseTimeout": 10000,
+    "uploadSpeedKBps": 256,
+    "downloadSpeedKBps": 256,
+    "maxTimeout": 1800000
+  }
+}
