@@ -5,6 +5,9 @@ __pycache__/
 # API Key (keep local only)
 api_key.txt
 
+# Local config (contains boss_qq, target_groups, etc.)
+config_local.json
+
 # AstrBot data (too large for repo)
 AstrBot/
 

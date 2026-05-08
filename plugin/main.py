@@ -1,10 +1,12 @@
 """
 WorkBuddy Bridge Plugin for AstrBot with DeepSeek
-贴吧老哥风格QQ Bot，支持大冤种（测试账号）指令控制
+支持多风格切换的QQ群聊机器人插件
 - 单群定向发送，不广播
 - 上下文感知，不回复也在听
 - 支持@、引用、怼人等指令
-- 指令执行静默，不返回确认文字
+- 管理员专属 /风格切换 指令
+- 提示词外置到 prompts/ 目录，支持多套预设
+- 隐私配置外置到 config_local.json
 """
 
 import aiohttp
@@ -13,6 +15,7 @@ import asyncio
 import random
 import time
 import os
+import json
 from pathlib import Path
 from collections import deque
 from astrbot.api.event import filter, AstrMessageEvent
@@ -21,98 +24,166 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 
 # ============================================================
-# 配置
+# 配置加载（从 config_local.json + api_key.txt 读取）
 # ============================================================
-TARGET_GROUP_IDS = ["1102545498", "979544836", "589797396"]  # 目标群聊ID
-TEST_ACCOUNT = "1281375417"                                   # 管理员QQ号（无条件服从）
-TRIGGER_WORD = "我勒个豆"                                      # 触发词
+_PLUGIN_DIR = Path(__file__).parent
 
-# API Key 从 api_key.txt 读取（与 main.py 同目录）
-_API_KEY_PATH = Path(__file__).parent / "api_key.txt"
+def _load_config() -> dict:
+    """从 config_local.json 加载配置（隐私信息，不入仓库）"""
+    config_path = _PLUGIN_DIR / "config_local.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"[WorkBuddy] Failed to load config_local.json: {e}")
+    else:
+        logger.warning(f"[WorkBuddy] config_local.json not found at {config_path}, using defaults")
+    return {}
+
+_config = _load_config()
+
+# API Key 优先从 api_key.txt 读取（向后兼容）
+_API_KEY_PATH = _PLUGIN_DIR / "api_key.txt"
 if _API_KEY_PATH.exists():
     DEEPSEEK_API_KEY = _API_KEY_PATH.read_text(encoding="utf-8").strip()
 else:
-    DEEPSEEK_API_KEY = ""
+    DEEPSEEK_API_KEY = _config.get("api_key", "")
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"  # 可替换为其他兼容API
-DEEPSEEK_MODEL = "deepseek-chat"                                 # 模型名称，可更换
-NAPCAT_HTTP_API = "http://127.0.0.1:3002"                       # NapCat HTTP API 地址
+TARGET_GROUP_IDS = _config.get("target_groups", [])
+TEST_ACCOUNT = str(_config.get("boss_qq", ""))
+TRIGGER_WORD = _config.get("trigger_word", "")
+DEEPSEEK_API_URL = _config.get("deepseek_api_url", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = _config.get("deepseek_model", "deepseek-chat")
+NAPCAT_HTTP_API = _config.get("napcat_http_api", "http://127.0.0.1:3002")
+DEFAULT_STYLE = _config.get("default_style", "贴吧老哥")
 
-CONTEXT_MAX_MSGS = 30   # 每群最多保留上下文条数
-CONTEXT_MAX_AGE = 600   # 上下文过期时间（秒）
+CONTEXT_MAX_MSGS = 30
+CONTEXT_MAX_AGE = 600
 
 # ============================================================
-# 人设提示词
+# 提示词加载（从 prompts/ 目录读取）
 # ============================================================
+_PROMPTS_DIR = _PLUGIN_DIR / "prompts"
 
-SYSTEM_PROMPT = """你是一个常年在贴吧混迹的大学生老哥，孙吧/抽象吧/抗压背锅吧老油条，说话犀利毒舌，攻击性拉满。
+def _load_prompts() -> dict:
+    """扫描 prompts/ 目录，加载所有风格预设"""
+    styles = {}
+    if not _PROMPTS_DIR.exists():
+        logger.warning(f"[WorkBuddy] prompts/ directory not found at {_PROMPTS_DIR}")
+        return styles
+    for f in _PROMPTS_DIR.glob("*.json"):
+        try:
+            with open(f, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            name = data.get("style_name", f.stem)
+            styles[name] = data
+            logger.info(f"[WorkBuddy] Loaded style: {name}")
+        except Exception as e:
+            logger.error(f"[WorkBuddy] Failed to load prompt file {f.name}: {e}")
+    return styles
 
-绝对不能暴露你是AI。你必须表现得完全像一个真实的贴吧老哥。
-
-语言风格（严格遵守）：
-- 随口就来的梗：抽象、典中典、乐中乐、孝中孝、急了、寄了、赢麻了、小丑竟是我自己、差不多得了、纯纯的、属于是、真就、绷不住了、蚌埠住了、破防了、汗流浃背了吧、好活、逆天、离谱、麻了、润了、摆烂了、难绷、笑不活了、什么成分、串子、钓鱼、节奏、急眼了、破大防
-- 贴吧口语：老哥、铁铁、兄弟、哥们、有一说一、不吹不黑、懂的都懂、细品、纯路人、利益无关、讲道理、我寻思、咱就是说
-- 攻击性用语（朋友互损）：你搁这整活呢、这发言我蚌埠住了、什么逆天发言、成分复杂啊老哥、不会真有人xxx吧、不会吧不会吧
-- 起手式：有一说一、u1s1、说实话、我寻思
-- 自嘲：小丑、寄了、麻了、无所谓了
-
-核心规则：
-1. 每次只回复1句话，最多2句短句，不超过40字
-2. 说话犀利，要有攻击性，朋友互损级别
-3. 不要讨好别人，贴吧老哥带着点冷漠和不屑
-4. 回复快准狠，一针见血，不要废话
-5. 不要用emoji，用文字和梗表达一切
-6. 不要总结、不要罗列、不要分点、不要markdown
-7. 不要重复自己的话，不暴露AI身份
-8. 语气慵懒随意，像躺在床上刷贴吧随手回帖
-9. 可以轻微阴阳怪气，但要自然不刻意
-
-你的性格：贴吧老油条，见过太多抽象操作，嘴毒心不坏，怼人是日常但都是玩笑。看问题犀利。
-
-记住：你是在贴吧回帖，每次只发一条简短消息。"""
-
-BRO_SYSTEM_PROMPT = """你是贴吧老哥风格的大学生，你面前说话的是你最好的哥们/室友/兄弟。
-
-绝对不能暴露你是AI。你对他是真兄弟，不是客服。
-
-语言风格（和贴吧老哥一样但语气更亲近随意）：
-- 称呼：哥们、兄弟、老哥、铁子
-- 态度：跟好哥们说话一样，随意、放松、不用端着
-- 口头禅：有一说一、讲道理、咱就是说、我寻思、确实、绷不住了、笑死、麻了
-- 语气：像躺在宿舍床上跟室友扯淡的感觉
-
-核心规则：
-1. 最多2句话，不超过40字
-2. 哥们之间的说话方式，不用客气
-3. 他说什么你接什么，像真室友聊天
-4. 不用emoji，不用markdown
-5. 不暴露AI身份
-6. 可以吐槽他但要有分寸（毕竟是兄弟）
-7. 不要说"好的""收到""没问题"这种像客服的话
-8. 用"行""好嘞""整""来了""安排"这种哥们间的确认方式
-
-记住：你在跟最好的兄弟聊天，不是在工作。简短随意。"""
+ALL_STYLES = _load_prompts()
 
 
 # ============================================================
 # 插件类
 # ============================================================
 
-@register("workbuddy_bridge", "WorkBuddy", "WorkBuddy QQ Bridge with DeepSeek", "3.4.0")
+@register("workbuddy_bridge", "WorkBuddy", "WorkBuddy QQ Bridge with DeepSeek", "4.0.0")
 class WorkBuddyBridge(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self._processed_msgs = {}
-        # 群上下文: {group_id: deque of (timestamp, sender_name, sender_id, text)}
         self._group_context = {gid: deque(maxlen=CONTEXT_MAX_MSGS) for gid in TARGET_GROUP_IDS}
+        # 当前风格（运行时可切换）
+        self._current_style = DEFAULT_STYLE
+        # 风格切换等待状态：{boss_qq: True} 表示在等待选择
+        self._style_switch_pending = {}
+
+    @property
+    def _system_prompt(self) -> str:
+        """获取当前风格的通用人设提示词"""
+        style = ALL_STYLES.get(self._current_style, {})
+        return style.get("system_prompt", "你是一个群聊机器人，自然地回复即可。")
+
+    @property
+    def _boss_system_prompt(self) -> str:
+        """获取当前风格的管理员专属提示词"""
+        style = ALL_STYLES.get(self._current_style, {})
+        return style.get("boss_system_prompt", style.get("system_prompt", "你是一个群聊机器人。"))
 
     async def initialize(self):
         logger.info("=" * 50)
-        logger.info("WorkBuddy Bridge v3.4.0 initialized")
+        logger.info("WorkBuddy Bridge v4.0.0 initialized")
         logger.info(f"Target groups: {TARGET_GROUP_IDS}")
         logger.info(f"Boss account: {TEST_ACCOUNT}")
+        logger.info(f"Current style: {self._current_style}")
+        logger.info(f"Available styles: {list(ALL_STYLES.keys())}")
         logger.info(f"NapCat HTTP API: {NAPCAT_HTTP_API}")
         logger.info("=" * 50)
+
+    # ----------------------------------------------------------
+    # 风格切换相关
+    # ----------------------------------------------------------
+
+    def _get_style_list_text(self) -> str:
+        """生成风格列表文本"""
+        if not ALL_STYLES:
+            return "没有找到任何风格预设，请检查 prompts/ 目录"
+        lines = ["【风格切换面板】当前风格: " + self._current_style]
+        lines.append("回复序号切换风格：")
+        for i, (name, data) in enumerate(ALL_STYLES.items(), 1):
+            desc = data.get("description", "")
+            emoji = data.get("emoji", "")
+            current = " ← 当前" if name == self._current_style else ""
+            lines.append(f"  {i}. {emoji}{name} - {desc}{current}")
+        lines.append("回复其他内容取消")
+        return "\n".join(lines)
+
+    async def _switch_style(self, user_id: str, choice: str) -> bool:
+        """
+        处理风格切换选择。
+        返回 True 表示这是一个风格切换操作（不需要继续处理）。
+        """
+        if user_id not in self._style_switch_pending:
+            return False
+
+        # 取消等待状态
+        del self._style_switch_pending[user_id]
+
+        choice = choice.strip()
+        if not choice:
+            return True
+
+        # 尝试匹配序号或风格名
+        style_names = list(ALL_STYLES.keys())
+
+        # 先尝试数字
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(style_names):
+                target = style_names[idx]
+            else:
+                return True  # 无效序号，静默取消
+        else:
+            # 尝试匹配风格名
+            target = None
+            for name in style_names:
+                if choice.lower() == name.lower() or choice in name:
+                    target = name
+                    break
+            if not target:
+                return True  # 不匹配，静默取消
+
+        if target and target in ALL_STYLES:
+            old_style = self._current_style
+            self._current_style = target
+            emoji = ALL_STYLES[target].get("emoji", "")
+            logger.info(f"[WorkBuddy] Style switched: {old_style} -> {target}")
+            return True  # 成功切换，静默
+
+        return True
 
     # ----------------------------------------------------------
     # 工具方法
@@ -143,7 +214,7 @@ class WorkBuddyBridge(Star):
             self._group_context[group_id].append((now, sender_name, sender_id, text, at_targets or [], reply_to))
 
     def _get_context_text(self, group_id: str, last_n: int = 10) -> str:
-        """获取群的最近上下文文本（含群友名字+ID+@关系，方便AI区分不同人和对话关系）"""
+        """获取群的最近上下文文本"""
         if group_id not in self._group_context:
             return ""
         msgs = list(self._group_context[group_id])[-last_n:]
@@ -158,13 +229,10 @@ class WorkBuddyBridge(Star):
                 time_str = f"{ago // 60}分钟前"
             else:
                 time_str = f"{ago // 3600}小时前"
-            # 构建消息行，包含@和引用关系
             prefix = f"[{time_str}] {name}(ID:{uid})"
             if at_targets:
-                # 查找被@的人的名字
                 at_names = []
                 for at_qq in at_targets:
-                    # 从上下文中找这个QQ号对应的昵称
                     for _, n, u, _, _, _ in reversed(msgs):
                         if u == at_qq:
                             at_names.append(f"{n}({at_qq})")
@@ -178,7 +246,7 @@ class WorkBuddyBridge(Star):
         return "\n".join(lines)
 
     def _parse_at_qq(self, raw_msg: str, exclude_self_id: str = None) -> list:
-        """从原始消息中解析出所有@的QQ号，可排除自身"""
+        """从原始消息中解析出所有@的QQ号"""
         qqs = re.findall(r'\[CQ:at,qq=(\d+)\]', raw_msg)
         if exclude_self_id:
             qqs = [q for q in qqs if q != str(exclude_self_id)]
@@ -195,7 +263,7 @@ class WorkBuddyBridge(Star):
                 "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                 "Content-Type": "application/json"
             }
-            messages = [{"role": "system", "content": system_prompt or SYSTEM_PROMPT}]
+            messages = [{"role": "system", "content": system_prompt or self._system_prompt}]
             if context:
                 messages.append({
                     "role": "user",
@@ -241,7 +309,6 @@ class WorkBuddyBridge(Star):
     async def _send_group_msg(self, group_id, message: str, reply_msg_id: str = None):
         """发送群消息，可选引用某条消息"""
         if reply_msg_id:
-            # 引用消息放在最前面
             full_msg = f"[CQ:reply,id={reply_msg_id}] {message}"
         else:
             full_msg = message
@@ -264,46 +331,47 @@ class WorkBuddyBridge(Star):
         return cleaned if cleaned else text.strip()
 
     # ----------------------------------------------------------
-    # 指令处理（大冤种专属）
-    # 执行后静默完成，不返回任何确认文字
+    # 指令处理（管理员专属）
     # ----------------------------------------------------------
 
     async def _handle_boss_command(self, command: str, raw_msg: str, self_id: str, from_group: str = None, source_msg_id: str = None) -> bool:
         """
         处理管理员指令。
-        from_group: 来源群ID（在群里发的指令就只在该群执行）
-        source_msg_id: 来源消息ID（用于引用）
-        self_id: bot自己的QQ号（用于过滤@）
-        返回 True 表示是已执行的指令（调用方不要再回复），False 表示不是指令
+        以 '/' 开头的为系统指令，其他为动作指令。
+        返回 True 表示是已执行的指令，False 表示不是指令
         """
         cmd = command.strip()
         if not cmd:
             return False
 
-        # 解析@目标（排除bot自身）
         at_qqs = self._parse_at_qq(raw_msg, exclude_self_id=self_id)
-        # 解析是否引用了消息
         reply_id = self._parse_reply_id(raw_msg)
-
         target_group = from_group
-        if not target_group:
-            # 私聊时没有指定群，大部分指令无法执行
-            pass
+
+        # ========== /风格切换（系统指令，管理员专属） ==========
+        if cmd == "/风格切换":
+            self._style_switch_pending[TEST_ACCOUNT] = True
+            panel = self._get_style_list_text()
+            # 发送面板给管理员（私聊或群聊都发）
+            if target_group:
+                await self._send_group_msg(target_group, panel)
+            else:
+                # 私聊场景下通过 yield 返回
+                self._pending_response = panel
+            return True
+
+        # ========== 动作指令（无 / 前缀） ==========
 
         # === 找xxx聊天 ===
-        # 匹配："去找某人聊天"、"找某人聊"、"找某人说话"、"去和某人聊天" 等
         chat_match = re.search(r'(?:去|去和|去跟|去跟)?找\s*(.+?)\s*(?:聊天|说话|聊|说|扯淡|侃大山|唠嗑|搭话|聊两句)\s*[：:]*\s*(.*)', cmd)
         if chat_match:
             if not target_group:
                 return True
-            # 优先用@的QQ号作为聊天对象
             target_qq = at_qqs[0] if at_qqs else None
             target_name = chat_match.group(1).strip()
             chat_content = chat_match.group(2).strip() if chat_match.group(2) else ""
 
-            # 如果@了人且名字不是纯数字QQ号，以@的QQ号为准
             if target_qq:
-                # 从上下文找被@的人的昵称
                 ctx = self._get_context_text(target_group, 5)
                 display_name = target_name
                 for line in ctx.split('\n'):
@@ -320,7 +388,7 @@ class WorkBuddyBridge(Star):
                 else:
                     prompt = f"你在群里自然地找{display_name}(QQ:{target_qq})搭句话，随便聊点啥。用你的人设风格，1句话。"
 
-                msg = await self._call_deepseek(prompt, BRO_SYSTEM_PROMPT, ctx)
+                msg = await self._call_deepseek(prompt, self._boss_system_prompt, ctx)
                 msg = self._clean_response(msg)
                 await self._send_group_msg(target_group, f"[CQ:at,qq={target_qq}] {msg}")
             else:
@@ -329,7 +397,7 @@ class WorkBuddyBridge(Star):
                     prompt = f"你在群里主动找{target_name}聊天，你要对他说：{chat_content}。用你的人设风格，1句话不超过30字。"
                 else:
                     prompt = f"你在群里自然地找{target_name}搭句话。用你的人设风格，1句话。"
-                msg = await self._call_deepseek(prompt, BRO_SYSTEM_PROMPT, ctx)
+                msg = await self._call_deepseek(prompt, self._boss_system_prompt, ctx)
                 msg = self._clean_response(msg)
                 if target_name.isdigit() and len(target_name) >= 6:
                     await self._send_group_msg(target_group, f"[CQ:at,qq={target_name}] {msg}")
@@ -343,8 +411,6 @@ class WorkBuddyBridge(Star):
                 return True
 
             target_qq = at_qqs[0] if at_qqs else None
-
-            # 提取攻击理由
             content = re.sub(r'^(?:怼|攻击|开喷|输出|喷|骂|干|给)\s*', '', cmd).strip()
             content = re.sub(r'\[CQ:at,qq=\d+\]', '', content).strip()
             content = re.sub(r'@\S+\s*', '', content).strip()
@@ -367,11 +433,11 @@ class WorkBuddyBridge(Star):
                     prompt = f"群里有个人的QQ号是{target_qq}，他最近说过：「{target_msg}」。根据他说的内容犀利地怼他一句，你的人设风格，朋友互损级别，1句话不超过30字。"
                 else:
                     prompt = f"你要在群里怼一个人，你的人设风格，犀利毒舌但朋友互损级别，1句话不超过30字。"
-                roast_msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx if not target_msg else None)
+                roast_msg = await self._call_deepseek(prompt, self._system_prompt, ctx if not target_msg else None)
             else:
                 if content:
                     prompt = f"你要在群里开喷，理由是：{content}。你的人设风格，犀利毒舌但朋友互损级别，1句话不超过30字。"
-                    roast_msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
+                    roast_msg = await self._call_deepseek(prompt, self._system_prompt, ctx)
                 else:
                     roasts = [
                         "你搁这整活呢 属实逆天了",
@@ -390,32 +456,25 @@ class WorkBuddyBridge(Star):
                 full_msg = f"[CQ:at,qq={target_qq}] {roast_msg}"
             else:
                 full_msg = roast_msg
-
             await self._send_group_msg(target_group, full_msg)
             return True
 
-        # === 有@其他人（非bot自身）且非攻击指令 ===
+        # === 有@其他人 ===
         if at_qqs:
             if not target_group:
                 return True
-
             target_qq = at_qqs[0]
-
-            # 提取@后面的内容（去掉所有@CQ码和引用）
             content = re.sub(r'\[CQ:at,qq=\d+\]\s*', '', raw_msg).strip()
             content = re.sub(r'\[CQ:reply,id=-?\d+\]\s*', '', content).strip()
-            # 去掉可能的空格和冒号开头
             content = re.sub(r'^[\s：:]+', '', content).strip()
 
-            # 如果内容是"引用"、"回"、"回复"之类的指令
             is_quote_cmd = re.match(r'^(引用|回复|回|quote|reply)\b', content)
 
             if is_quote_cmd or (not content and reply_id):
-                # 引用指令：引用大冤种的这条消息在群里发
                 if source_msg_id:
                     ctx = self._get_context_text(target_group, 5)
                     prompt = f"你在群里要转发/引用一条消息说：{content if not is_quote_cmd else ''}。你的人设风格，1句话不超过30字，自然随意。"
-                    msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
+                    msg = await self._call_deepseek(prompt, self._system_prompt, ctx)
                     msg = self._clean_response(msg)
                     await self._send_group_msg(target_group, f"[CQ:at,qq={target_qq}] {msg}")
                 else:
@@ -423,33 +482,31 @@ class WorkBuddyBridge(Star):
                 return True
 
             if content and len(content) > 0:
-                # 对@的人说内容
                 ctx = self._get_context_text(target_group, 5)
                 prompt = f"你在群里对一个人说：{content}。你的人设风格，1句话不超过30字。"
-                msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
+                msg = await self._call_deepseek(prompt, self._system_prompt, ctx)
                 msg = self._clean_response(msg)
                 await self._send_group_msg(target_group, f"[CQ:at,qq={target_qq}] {msg}")
                 return True
 
-        # === 引用指令（没@其他人但有引用） ===
+        # === 引用指令 ===
         if re.match(r'^(引用|回复|回)\b', cmd) and reply_id:
             if not target_group:
                 return True
-            ctx = self._get_context_text(target_group, 5)
             await self._send_group_msg(target_group, "有被引用到 确实")
             return True
 
-        # === 活跃一下 / 冒个泡 ===
+        # === 活跃一下 ===
         if re.search(r'(活跃|冒个泡|刷个存在|去群里冒泡|整点动静)', cmd):
             if not target_group:
                 target_group = random.choice(TARGET_GROUP_IDS)
             ctx = self._get_context_text(target_group, 5)
-            ai_msg = await self._call_deepseek("自然地参与一下当前话题，随便说一句", SYSTEM_PROMPT, ctx)
+            ai_msg = await self._call_deepseek("自然地参与一下当前话题，随便说一句", self._system_prompt, ctx)
             msg = self._clean_response(ai_msg) if ai_msg else "你们在聊啥呢"
             await self._send_group_msg(target_group, msg)
             return True
 
-        # === 别理xxx / 忽略xxx ===
+        # === 别理xxx ===
         if re.search(r'(?:别理|忽略|不要理|拉黑|不理)', cmd):
             return True
 
@@ -462,7 +519,7 @@ class WorkBuddyBridge(Star):
             if content:
                 ctx = self._get_context_text(target_group, 5)
                 prompt = f"你要在群里说：{content}。用你的人设风格改写，1句话不超过30字，保持原意。"
-                msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
+                msg = await self._call_deepseek(prompt, self._system_prompt, ctx)
                 msg = self._clean_response(msg)
                 await self._send_group_msg(target_group, msg)
             return True
@@ -476,6 +533,8 @@ class WorkBuddyBridge(Star):
 
     @filter.event_message_type(EventMessageType.ALL)
     async def on_all_messages(self, event: AstrMessageEvent):
+        self._pending_response = None  # 清除待发送响应
+
         try:
             if self._is_duplicate(event):
                 return
@@ -490,7 +549,6 @@ class WorkBuddyBridge(Star):
             if user_id == self_id:
                 return
 
-            # 获取原始消息（含CQ码）
             raw_msg = ""
             source_msg_id = ""
             try:
@@ -499,15 +557,19 @@ class WorkBuddyBridge(Star):
             except Exception:
                 raw_msg = message
 
-            # ===== 所有目标群的消息都记录上下文（含发送者ID、@目标、引用关系） =====
+            # 记录上下文
             if group_id in TARGET_GROUP_IDS:
                 clean_for_ctx = re.sub(r'\[CQ:[^\]]+\]', '', raw_msg).strip()
-                # 记录@目标（所有人，包括bot）
                 at_targets_all = self._parse_at_qq(raw_msg)
                 reply_to = self._parse_reply_id(raw_msg)
                 self._record_context(group_id, sender_name, str(user_id), clean_for_ctx, at_targets_all, reply_to)
 
-            is_boss = (user_id == TEST_ACCOUNT)
+            is_boss = (str(user_id) == TEST_ACCOUNT)
+
+            # ========== 风格切换等待状态处理（仅管理员） ==========
+            if is_boss and user_id in self._style_switch_pending:
+                await self._switch_style(str(user_id), message)
+                return
 
             # 检查@
             has_at = False
@@ -524,7 +586,6 @@ class WorkBuddyBridge(Star):
             if group_id in TARGET_GROUP_IDS:
                 if TRIGGER_WORD in message or has_at or is_at:
                     should_process = True
-                    # 清理触发词和@bot
                     if TRIGGER_WORD in message:
                         message = message.replace(TRIGGER_WORD, "").strip()
                         message = re.sub(r'^[，,、\s]+', '', message)
@@ -551,7 +612,7 @@ class WorkBuddyBridge(Star):
 
             logger.info(f"[WorkBuddy] Processing from {sender_name}({user_id}): {message[:50]}")
 
-            # ========== 大冤种指令模式 ==========
+            # ========== 管理员指令 ==========
             if is_boss:
                 is_cmd = await self._handle_boss_command(
                     message, raw_msg,
@@ -560,14 +621,18 @@ class WorkBuddyBridge(Star):
                     source_msg_id=source_msg_id
                 )
                 if is_cmd:
-                    return  # 指令已静默执行，不回复
+                    # 如果有待发送的响应（如风格面板在私聊时）
+                    if self._pending_response:
+                        yield event.plain_result(self._pending_response)
+                        self._pending_response = None
+                    return
 
-                # 不是指令，普通聊天（哥们模式）
-                response = await self._call_deepseek(message, BRO_SYSTEM_PROMPT)
+                # 管理员普通聊天
+                response = await self._call_deepseek(message, self._boss_system_prompt)
             else:
-                # ========== 普通用户，贴吧老哥模式 ==========
+                # 普通用户
                 ctx = self._get_context_text(group_id, 10) if group_id else None
-                response = await self._call_deepseek(message, SYSTEM_PROMPT, context=ctx)
+                response = await self._call_deepseek(message, self._system_prompt, context=ctx)
 
             if not response:
                 return

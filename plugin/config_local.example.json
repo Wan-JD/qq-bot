@@ -1,0 +1,9 @@
+{
+    "boss_qq": "你的管理员QQ号",
+    "target_groups": ["目标群号1", "目标群号2"],
+    "trigger_word": "触发词",
+    "napcat_http_api": "http://127.0.0.1:3002",
+    "deepseek_api_url": "https://api.deepseek.com/chat/completions",
+    "deepseek_model": "deepseek-chat",
+    "default_style": "贴吧老哥"
+}

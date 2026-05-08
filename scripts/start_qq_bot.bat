@@ -16,7 +16,7 @@ timeout /t 2 /nobreak >nul
 echo    Done
 echo.
 
-echo [2/3] Starting NapCat with QQ 3796981649...
+echo [2/3] Starting NapCat...
 cd /d "%NAPCAT_DIR%"
 start "NapCat" cmd /k napcat.auto.bat
 timeout /t 8
@@ -37,10 +37,10 @@ echo.
 echo Usage:
 echo   Group chat: just send any message directly
 echo   Private chat: send "wolgedou + message"
-echo   Test account 1281375417 works without trigger
+echo   Boss account (config_local.json) works without trigger
 echo.
 echo Note:
-echo   NapCat auto-login QQ 3796981649
+echo   NapCat auto-login uses configured QQ account
 echo   Wait 15 seconds before testing!
 echo   Minimize windows, do not close
 echo.

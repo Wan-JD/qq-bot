@@ -2,16 +2,16 @@
 
 基于 [AstrBot](https://github.com/Soulter/AstrBot) + [NapCat](https://github.com/NapNeko/NapCatQQ) + 大语言模型 API 的 QQ 群聊机器人插件。
 
-通过 DeepSeek / OpenAI 兼容 API 驱动，支持**自定义人设**、上下文感知、管理员指令控制。人设风格完全由你决定——毒舌、温柔、二次元、学术派……随意切换。
+通过 DeepSeek / OpenAI 兼容 API 驱动，支持**多风格切换**、上下文感知、管理员指令控制。
 
 ## 功能特性
 
-- **自定义人设**：通过修改提示词即可设定任意性格和说话风格
+- **多风格切换**：内置 5 套预设人设（贴吧老哥、温柔学姐、毒舌损友、学术大佬、二次元萌娘），管理员可随时切换，也可自定义风格
+- **隐私配置分离**：API Key、管理员QQ、目标群号等敏感信息全部外置到 `config_local.json`，不会进入仓库
 - **触发词回复**：群聊中包含触发词或被@时回复
-- **上下文感知**：不回复时也在听，触发回复能接上话题；自动识别@关系和引用，分清谁对谁说了什么
-- **管理员指令**：管理员可通过私聊/群聊控制 bot 主动发消息（怼人、@群友、活跃等）
-- **单群定向**：指令只在触发群执行，不广播
-- **管理员模式**：指定账号私聊无需触发词，使用专属人设
+- **上下文感知**：不回复时也在听，触发回复能接上话题；自动识别@关系和引用
+- **管理员指令**：管理员可通过私聊/群聊控制 bot 主动发消息
+- **风格切换指令**：管理员发送 `/风格切换` 即可选择人设风格
 - **多模型支持**：兼容任何 OpenAI Chat Completions 格式的 API
 
 ## 系统架构
@@ -68,56 +68,67 @@
 
 ### 3. 安装插件
 
-1. 将 `plugin/` 目录下的所有文件复制到：
-   ```
-   <AstrBot安装目录>/data/plugins/workbuddy_bridge/
-   ```
-   最终目录结构：
-   ```
-   plugins/workbuddy_bridge/
-   ├── main.py
-   ├── metadata.yaml
-   └── api_key.txt      ← 手动创建，填入 API Key
-   ```
+将以下目录结构复制到 AstrBot 插件目录：
 
-### 4. 配置 API Key
-
-1. 在 `plugin/` 目录下创建 `api_key.txt` 文件
-2. 文件中只写一行，内容为你的 API Key：
-   ```
-   sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-   ```
-3. 获取 DeepSeek API Key：https://platform.deepseek.com/api_keys
-
-> `api_key.txt` 已在 `.gitignore` 中排除，不会被上传到仓库。仓库中提供了 `api_key.example.txt` 作为模板。
-
-### 5. 配置插件参数
-
-编辑 `plugin/main.py` 顶部的配置区域：
-
-```python
-TARGET_GROUP_IDS = ["群号1", "群号2"]   # 目标群聊ID列表
-TEST_ACCOUNT = "管理员QQ号"              # 管理员QQ号（无条件服从）
-TRIGGER_WORD = "触发词"                  # 触发词（群聊中包含此词或被@时触发）
-DEEPSEEK_API_URL = "https://..."        # API 地址（可替换）
-DEEPSEEK_MODEL = "deepseek-chat"         # 模型名称（可更换）
-NAPCAT_HTTP_API = "http://127.0.0.1:3002"  # NapCat HTTP API 地址
+```
+<AstrBot安装目录>/data/plugins/workbuddy_bridge/
+├── main.py                           # 核心插件代码
+├── metadata.yaml                     # 插件元数据
+├── config_local.json                 # ← 手动创建，填入隐私配置
+├── api_key.txt                       # ← 手动创建，填入 API Key
+└── prompts/                          # 风格预设目录
+    ├── 贴吧老哥.json                  # 默认风格
+    ├── 温柔学姐.json
+    ├── 毒舌损友.json
+    ├── 学术大佬.json
+    └── 二次元萌娘.json
 ```
 
-### 6. 启动
+### 4. 配置隐私信息
+
+#### 4.1 创建 `config_local.json`
+
+参照 `config_local.example.json` 创建 `config_local.json`（已在 `.gitignore` 中排除）：
+
+```json
+{
+    "boss_qq": "你的管理员QQ号",
+    "target_groups": ["目标群号1", "目标群号2"],
+    "trigger_word": "触发词",
+    "napcat_http_api": "http://127.0.0.1:3002",
+    "deepseek_api_url": "https://api.deepseek.com/chat/completions",
+    "deepseek_model": "deepseek-chat",
+    "default_style": "贴吧老哥"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `boss_qq` | 管理员QQ号，只有此人可以使用指令和切换风格 |
+| `target_groups` | 目标群聊ID列表 |
+| `trigger_word` | 群聊触发词 |
+| `napcat_http_api` | NapCat HTTP API 地址 |
+| `deepseek_api_url` | LLM API 地址（兼容 OpenAI 格式） |
+| `deepseek_model` | 模型名称 |
+| `default_style` | 默认风格名称（对应 prompts/ 下的文件名） |
+
+#### 4.2 创建 `api_key.txt`
+
+在插件目录下创建 `api_key.txt`，内容为你的 API Key：
+
+```
+sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+> 也可以在 `config_local.json` 中设置 `"api_key"` 字段，但 `api_key.txt` 优先级更高（向后兼容）。
+
+### 5. 启动
 
 使用 `scripts/start_qq_bot.bat` 一键启动：
 
 ```bat
 start_qq_bot.bat
 ```
-
-启动流程：
-1. 停止已有的 Python/QQ 进程
-2. 启动 NapCat（等待 8 秒连接）
-3. 启动 AstrBot
-
-启动后等待约 15 秒，确保 NapCat 连接成功后再测试。
 
 ## 使用方法
 
@@ -135,16 +146,53 @@ start_qq_bot.bat
 
 | 指令 | 说明 |
 |------|------|
+| `/风格切换` | 打开风格选择面板（仅管理员可用） |
 | `@bot 怼 @某人` | 在群里@某人并怼他（结合上下文） |
 | `@bot 怼 @某人 理由` | 带理由怼人 |
-| `@bot 找 @某人 聊天 内容` | 主动@某人并搭话（内容会对目标说） |
+| `@bot 找 @某人 聊天 内容` | 主动@某人并搭话 |
 | `@bot 找某人聊天` | 按名字找人搭话 |
 | `@bot @某人 内容` | 在群里@某人说内容 |
 | `@bot 活跃一下` | 根据当前话题冒个泡 |
 | `@bot 去群里说xxx` | 在群里发消息 |
 | `@bot 别理某人` | 静默确认 |
 
-所有指令执行后**静默完成**，不会回复确认文字。
+> 以 `/` 开头的是系统指令（如 `/风格切换`），其余为动作指令。所有指令执行后**静默完成**。
+
+### 风格切换
+
+1. 管理员发送 `/风格切换`
+2. Bot 发送风格列表面板：
+   ```
+   【风格切换面板】当前风格: 贴吧老哥
+   回复序号切换风格：
+     1. 😏贴吧老哥 - 嘴欠但有趣的大学生
+     2. 🌸温柔学姐 - 温柔体贴的学姐
+     3. 🔪毒舌损友 - 嘴特别毒但关系特别铁
+     4. 📚学术大佬 - 学术圈大佬风格
+     5. 🎀二次元萌娘 - 二次元风格小可爱
+   回复其他内容取消
+   ```
+3. 管理员回复序号或风格名即可切换
+
+### 自定义风格
+
+在 `prompts/` 目录下创建新的 `.json` 文件：
+
+```json
+{
+    "style_name": "我的风格",
+    "description": "简短描述",
+    "emoji": "🎯",
+    "system_prompt": "通用人设提示词...",
+    "boss_system_prompt": "管理员专属提示词..."
+}
+```
+
+- `system_prompt`：群聊中所有普通用户看到的风格
+- `boss_system_prompt`：管理员私聊/指令模式使用的风格（通常更亲近）
+- `boss_system_prompt` 可省略，省略时使用 `system_prompt`
+
+然后在 `config_local.json` 中设置 `"default_style": "我的风格"` 即可。
 
 ### 上下文感知
 
@@ -153,52 +201,59 @@ start_qq_bot.bat
 - 每个群保留最近 30 条消息，10 分钟过期
 - 回复和指令都会参考上下文，让内容更贴合当前聊天
 
-## 自定义人设
-
-编辑 `plugin/main.py` 中的提示词变量即可完全定义 bot 的性格：
-
-- `SYSTEM_PROMPT`：**通用人设**（群聊中使用，所有人看到的风格）
-- `BRO_SYSTEM_PROMPT`：**管理员人设**（管理员私聊或指令模式使用，通常更亲近随意）
-
-你可以将人设设为任何风格，例如：
-
-| 风格 | 示例提示词关键词 |
-|------|----------------|
-| 毒舌损友 | 攻击性、互损、犀利、贴吧风格 |
-| 温柔陪伴 | 温柔、关心、善解人意、安慰 |
-| 二次元萌娘 | 萌、喵、酱、~、可爱的语气 |
-| 学术助手 | 专业、严谨、引用论文、数据支撑 |
-| 搞笑段子手 | 梗、谐音、段子、反转 |
-
-> 项目默认提供的是毒舌损友风格作为参考，你可以完全替换为自己的设定。
-
 ## 更换模型
 
 ### DeepSeek 系列
 
-编辑 `plugin/main.py`：
+编辑 `config_local.json`：
 
-```python
-DEEPSEEK_MODEL = "deepseek-chat"       # 标准版
-# DEEPSEEK_MODEL = "deepseek-reasoner"  # 推理版
+```json
+{
+    "deepseek_model": "deepseek-chat"
+}
 ```
 
 API 地址保持不变：`https://api.deepseek.com/chat/completions`
 
 ### 其他兼容 OpenAI 格式的模型
 
-编辑 `plugin/main.py` 中的两个参数：
+编辑 `config_local.json`：
 
-```python
-DEEPSEEK_API_URL = "https://api.openai.com/v1/chat/completions"  # OpenAI
-DEEPSEEK_MODEL = "gpt-4o-mini"
+```json
+{
+    "deepseek_api_url": "https://api.openai.com/v1/chat/completions",
+    "deepseek_model": "gpt-4o-mini"
+}
 ```
 
-支持任何兼容 OpenAI Chat Completions API 格式的服务（如通义千问、智谱GLM、本地Ollama等），只需修改 URL 和模型名即可。
+支持任何兼容 OpenAI Chat Completions API 格式的服务（通义千问、智谱GLM、本地Ollama等）。
 
-### API Key 文件
+## 项目结构
 
-无论用什么模型，`api_key.txt` 中填入对应服务的 API Key 即可。
+```
+qq-bot/
+├── .gitignore                         # Git 忽略规则（排除 api_key.txt, config_local.json）
+├── README.md                          # 本文件
+├── api_key.example.txt                # API Key 模板
+│
+├── plugin/                            # AstrBot 插件（复制到 AstrBot/data/plugins/workbuddy_bridge/）
+│   ├── main.py                        # 核心插件代码
+│   ├── metadata.yaml                  # 插件元数据
+│   ├── config_local.example.json      # 隐私配置模板
+│   └── prompts/                       # 风格预设目录
+│       ├── 贴吧老哥.json              # 默认：嘴欠有趣大学生
+│       ├── 温柔学姐.json              # 温柔体贴
+│       ├── 毒舌损友.json              # 犀利损友
+│       ├── 学术大佬.json              # 学术风
+│       └── 二次元萌娘.json            # 二次元可爱风
+│
+├── config/                            # 配置文件参考
+│   ├── astrbot.json                   # AstrBot 配置
+│   └── napcat.json                    # NapCat OneBot11 配置
+│
+└── scripts/
+    └── start_qq_bot.bat               # 一键启动脚本
+```
 
 ## 注意事项
 
@@ -206,26 +261,7 @@ DEEPSEEK_MODEL = "gpt-4o-mini"
 2. **风险提示**：使用第三方 QQ 协议端存在被封号风险，请自行评估
 3. **API 费用**：按量计费，建议关注用量
 4. **端口冲突**：确保 3001（WebSocket）和 3002（HTTP API）端口未被占用
-
-## 项目结构
-
-```
-qq-bot/
-├── .gitignore                 # Git 忽略规则
-├── README.md                  # 本文件
-├── api_key.example.txt        # API Key 模板（空文件）
-│
-├── plugin/                    # AstrBot 插件
-│   ├── main.py                # 核心插件代码（人设、指令、上下文处理）
-│   └── metadata.yaml          # 插件元数据
-│
-├── config/                    # 配置文件参考
-│   ├── astrbot.json           # AstrBot 配置（敏感信息已清除）
-│   └── napcat.json            # NapCat OneBot11 配置
-│
-└── scripts/
-    └── start_qq_bot.bat       # 一键启动脚本
-```
+5. **隐私安全**：`config_local.json` 和 `api_key.txt` 已在 `.gitignore` 中排除，不会被提交到仓库
 
 ## 技术栈
 
