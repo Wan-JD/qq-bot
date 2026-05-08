@@ -134,23 +134,23 @@ class WorkBuddyBridge(Star):
         except Exception:
             return False
 
-    def _record_context(self, group_id: str, sender_name: str, sender_id: str, text: str):
-        """记录群消息到上下文（含发送者ID以区分不同群友）"""
+    def _record_context(self, group_id: str, sender_name: str, sender_id: str, text: str, at_targets: list = None, reply_to: str = None):
+        """记录群消息到上下文（含发送者ID、@目标、引用关系）"""
         if group_id in self._group_context:
             now = time.time()
             while self._group_context[group_id] and now - self._group_context[group_id][0][0] > CONTEXT_MAX_AGE:
                 self._group_context[group_id].popleft()
-            self._group_context[group_id].append((now, sender_name, sender_id, text))
+            self._group_context[group_id].append((now, sender_name, sender_id, text, at_targets or [], reply_to))
 
     def _get_context_text(self, group_id: str, last_n: int = 10) -> str:
-        """获取群的最近上下文文本（含群友名字+ID，方便AI区分不同人）"""
+        """获取群的最近上下文文本（含群友名字+ID+@关系，方便AI区分不同人和对话关系）"""
         if group_id not in self._group_context:
             return ""
         msgs = list(self._group_context[group_id])[-last_n:]
         if not msgs:
             return ""
         lines = []
-        for ts, name, uid, text in msgs:
+        for ts, name, uid, text, at_targets, reply_to in msgs:
             ago = int(time.time() - ts)
             if ago < 60:
                 time_str = "刚刚"
@@ -158,8 +158,23 @@ class WorkBuddyBridge(Star):
                 time_str = f"{ago // 60}分钟前"
             else:
                 time_str = f"{ago // 3600}小时前"
-            # 同时展示昵称和ID，让AI能区分谁是谁
-            lines.append(f"[{time_str}] {name}(ID:{uid}): {text}")
+            # 构建消息行，包含@和引用关系
+            prefix = f"[{time_str}] {name}(ID:{uid})"
+            if at_targets:
+                # 查找被@的人的名字
+                at_names = []
+                for at_qq in at_targets:
+                    # 从上下文中找这个QQ号对应的昵称
+                    for _, n, u, _, _, _ in reversed(msgs):
+                        if u == at_qq:
+                            at_names.append(f"{n}({at_qq})")
+                            break
+                    else:
+                        at_names.append(at_qq)
+                prefix += f" @{','.join(at_names)}"
+            if reply_to:
+                prefix += f" [回复]"
+            lines.append(f"{prefix}: {text}")
         return "\n".join(lines)
 
     def _parse_at_qq(self, raw_msg: str, exclude_self_id: str = None) -> list:
@@ -184,7 +199,7 @@ class WorkBuddyBridge(Star):
             if context:
                 messages.append({
                     "role": "user",
-                    "content": f"最近群聊记录：\n{context}\n\n现在有人说：{user_message}\n\n要求：只回复1-2句短句，不超过40字，像QQ聊天一样自然随意。不要用emoji。接上话题节奏，注意区分不同群友说的话。"
+                    "content": f"最近群聊记录（注意：'@某人'表示该消息在@某人，'ID:xxx'用于区分不同人）：\n{context}\n\n现在有人说：{user_message}\n\n要求：只回复1-2句短句，不超过40字，像QQ聊天一样自然随意。不要用emoji。接上话题节奏，注意区分不同群友说的话，搞清楚谁对谁说了什么再回复。"
                 })
             else:
                 messages.append({
@@ -255,7 +270,7 @@ class WorkBuddyBridge(Star):
 
     async def _handle_boss_command(self, command: str, raw_msg: str, self_id: str, from_group: str = None, source_msg_id: str = None) -> bool:
         """
-        处理大冤种指令。
+        处理管理员指令。
         from_group: 来源群ID（在群里发的指令就只在该群执行）
         source_msg_id: 来源消息ID（用于引用）
         self_id: bot自己的QQ号（用于过滤@）
@@ -271,11 +286,61 @@ class WorkBuddyBridge(Star):
         reply_id = self._parse_reply_id(raw_msg)
 
         target_group = from_group
+        if not target_group:
+            # 私聊时没有指定群，大部分指令无法执行
+            pass
+
+        # === 找xxx聊天 ===
+        # 匹配："去找某人聊天"、"找某人聊"、"找某人说话"、"去和某人聊天" 等
+        chat_match = re.search(r'(?:去|去和|去跟|去跟)?找\s*(.+?)\s*(?:聊天|说话|聊|说|扯淡|侃大山|唠嗑|搭话|聊两句)\s*[：:]*\s*(.*)', cmd)
+        if chat_match:
+            if not target_group:
+                return True
+            # 优先用@的QQ号作为聊天对象
+            target_qq = at_qqs[0] if at_qqs else None
+            target_name = chat_match.group(1).strip()
+            chat_content = chat_match.group(2).strip() if chat_match.group(2) else ""
+
+            # 如果@了人且名字不是纯数字QQ号，以@的QQ号为准
+            if target_qq:
+                # 从上下文找被@的人的昵称
+                ctx = self._get_context_text(target_group, 5)
+                display_name = target_name
+                for line in ctx.split('\n'):
+                    if f'ID:{target_qq}' in line:
+                        parts = line.split('] ')
+                        if parts:
+                            name_part = parts[-1].split('(')[0].strip()
+                            if name_part:
+                                display_name = name_part
+                                break
+
+                if chat_content:
+                    prompt = f"你在群里主动找{display_name}(QQ:{target_qq})聊天，你要对他说：{chat_content}。用你的人设风格，1句话不超过30字，像好哥们聊天一样。"
+                else:
+                    prompt = f"你在群里自然地找{display_name}(QQ:{target_qq})搭句话，随便聊点啥。用你的人设风格，1句话。"
+
+                msg = await self._call_deepseek(prompt, BRO_SYSTEM_PROMPT, ctx)
+                msg = self._clean_response(msg)
+                await self._send_group_msg(target_group, f"[CQ:at,qq={target_qq}] {msg}")
+            else:
+                ctx = self._get_context_text(target_group, 5)
+                if chat_content:
+                    prompt = f"你在群里主动找{target_name}聊天，你要对他说：{chat_content}。用你的人设风格，1句话不超过30字。"
+                else:
+                    prompt = f"你在群里自然地找{target_name}搭句话。用你的人设风格，1句话。"
+                msg = await self._call_deepseek(prompt, BRO_SYSTEM_PROMPT, ctx)
+                msg = self._clean_response(msg)
+                if target_name.isdigit() and len(target_name) >= 6:
+                    await self._send_group_msg(target_group, f"[CQ:at,qq={target_name}] {msg}")
+                else:
+                    await self._send_group_msg(target_group, msg)
+            return True
 
         # === 怼 / 攻击 / 开喷 / 输出 ===
         if re.match(r'^(?:怼|攻击|开喷|输出|喷|骂|干)', cmd):
             if not target_group:
-                return True  # 私聊没指定群，静默忽略
+                return True
 
             target_qq = at_qqs[0] if at_qqs else None
 
@@ -289,7 +354,6 @@ class WorkBuddyBridge(Star):
             ctx = self._get_context_text(target_group, 8)
 
             if target_qq:
-                # 从上下文中找这个人的发言，针对性攻击
                 target_msg = ""
                 if ctx and target_qq in ctx:
                     for line in ctx.split('\n'):
@@ -298,15 +362,15 @@ class WorkBuddyBridge(Star):
                             break
 
                 if content:
-                    prompt = f"群里有个人的QQ号是{target_qq}，他之前说过：「{target_msg}」。现在你要怼他，理由是：{content}。贴吧老哥风格，犀利毒舌但朋友互损级别，1句话不超过30字。要结合他之前说的话来怼，对人对事。"
+                    prompt = f"群里有个人的QQ号是{target_qq}，他之前说过：「{target_msg}」。现在你要怼他，理由是：{content}。你的人设风格，犀利毒舌但朋友互损级别，1句话不超过30字。要结合他之前说的话来怼，对人对事。"
                 elif target_msg:
-                    prompt = f"群里有个人的QQ号是{target_qq}，他最近说过：「{target_msg}」。根据他说的内容犀利地怼他一句，贴吧老哥风格，朋友互损级别，1句话不超过30字。"
+                    prompt = f"群里有个人的QQ号是{target_qq}，他最近说过：「{target_msg}」。根据他说的内容犀利地怼他一句，你的人设风格，朋友互损级别，1句话不超过30字。"
                 else:
-                    prompt = f"你要在群里怼一个人，贴吧老哥风格，犀利毒舌但朋友互损级别，1句话不超过30字。"
+                    prompt = f"你要在群里怼一个人，你的人设风格，犀利毒舌但朋友互损级别，1句话不超过30字。"
                 roast_msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx if not target_msg else None)
             else:
                 if content:
-                    prompt = f"你要在群里开喷，理由是：{content}。贴吧老哥风格，犀利毒舌但朋友互损级别，1句话不超过30字。"
+                    prompt = f"你要在群里开喷，理由是：{content}。你的人设风格，犀利毒舌但朋友互损级别，1句话不超过30字。"
                     roast_msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
                 else:
                     roasts = [
@@ -328,12 +392,12 @@ class WorkBuddyBridge(Star):
                 full_msg = roast_msg
 
             await self._send_group_msg(target_group, full_msg)
-            return True  # 静默完成，不回复大冤种
+            return True
 
         # === 有@其他人（非bot自身）且非攻击指令 ===
         if at_qqs:
             if not target_group:
-                return True  # 私聊没指定群
+                return True
 
             target_qq = at_qqs[0]
 
@@ -350,7 +414,7 @@ class WorkBuddyBridge(Star):
                 # 引用指令：引用大冤种的这条消息在群里发
                 if source_msg_id:
                     ctx = self._get_context_text(target_group, 5)
-                    prompt = f"你在群里要转发/引用一条消息说：{content if not is_quote_cmd else ''}。贴吧老哥风格，1句话不超过30字，自然随意。"
+                    prompt = f"你在群里要转发/引用一条消息说：{content if not is_quote_cmd else ''}。你的人设风格，1句话不超过30字，自然随意。"
                     msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
                     msg = self._clean_response(msg)
                     await self._send_group_msg(target_group, f"[CQ:at,qq={target_qq}] {msg}")
@@ -361,7 +425,7 @@ class WorkBuddyBridge(Star):
             if content and len(content) > 0:
                 # 对@的人说内容
                 ctx = self._get_context_text(target_group, 5)
-                prompt = f"你在群里对一个人说：{content}。贴吧老哥风格，1句话不超过30字。"
+                prompt = f"你在群里对一个人说：{content}。你的人设风格，1句话不超过30字。"
                 msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
                 msg = self._clean_response(msg)
                 await self._send_group_msg(target_group, f"[CQ:at,qq={target_qq}] {msg}")
@@ -385,30 +449,9 @@ class WorkBuddyBridge(Star):
             await self._send_group_msg(target_group, msg)
             return True
 
-        # === 找xxx聊天 ===
-        chat_match = re.search(r'(?:去)?找\s*(.+?)\s*(?:聊天|说话|聊|说|扯淡)\s*[：:]*\s*(.*)', cmd)
-        if chat_match:
-            if not target_group:
-                return True
-            target_name = chat_match.group(1).strip()
-            chat_content = chat_match.group(2).strip() if chat_match.group(2) else ""
-            ctx = self._get_context_text(target_group, 5)
-            if chat_content:
-                prompt = f"你在群里主动找{target_name}聊天，内容是：{chat_content}。贴吧老哥风格，1句话不超过30字。"
-            else:
-                prompt = f"你在群里自然地找{target_name}搭句话。贴吧老哥风格，1句话。"
-            msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
-            msg = self._clean_response(msg)
-            if target_name.isdigit() and len(target_name) >= 6:
-                full_msg = f"[CQ:at,qq={target_name}] {msg}"
-            else:
-                full_msg = msg
-            await self._send_group_msg(target_group, full_msg)
-            return True
-
         # === 别理xxx / 忽略xxx ===
         if re.search(r'(?:别理|忽略|不要理|拉黑|不理)', cmd):
-            return True  # 静默确认
+            return True
 
         # === 去群里说xxx ===
         say_match = re.search(r'(?:去群里?|在群里|群里?)\s*(?:说|发|讲)?\s*(.+)', cmd)
@@ -418,7 +461,7 @@ class WorkBuddyBridge(Star):
             content = say_match.group(1).strip()
             if content:
                 ctx = self._get_context_text(target_group, 5)
-                prompt = f"你要在群里说：{content}。用贴吧老哥风格改写，1句话不超过30字，保持原意。"
+                prompt = f"你要在群里说：{content}。用你的人设风格改写，1句话不超过30字，保持原意。"
                 msg = await self._call_deepseek(prompt, SYSTEM_PROMPT, ctx)
                 msg = self._clean_response(msg)
                 await self._send_group_msg(target_group, msg)
@@ -456,10 +499,13 @@ class WorkBuddyBridge(Star):
             except Exception:
                 raw_msg = message
 
-            # ===== 所有目标群的消息都记录上下文（含发送者ID） =====
+            # ===== 所有目标群的消息都记录上下文（含发送者ID、@目标、引用关系） =====
             if group_id in TARGET_GROUP_IDS:
                 clean_for_ctx = re.sub(r'\[CQ:[^\]]+\]', '', raw_msg).strip()
-                self._record_context(group_id, sender_name, str(user_id), clean_for_ctx)
+                # 记录@目标（所有人，包括bot）
+                at_targets_all = self._parse_at_qq(raw_msg)
+                reply_to = self._parse_reply_id(raw_msg)
+                self._record_context(group_id, sender_name, str(user_id), clean_for_ctx, at_targets_all, reply_to)
 
             is_boss = (user_id == TEST_ACCOUNT)
 
