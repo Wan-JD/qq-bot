@@ -1,9 +1,42 @@
 {
     "boss_qq": "你的管理员QQ号",
-    "target_groups": ["目标群号1", "目标群号2"],
+    "target_groups": [
+        "目标群号1",
+        "目标群号2"
+    ],
     "trigger_word": "触发词",
     "napcat_http_api": "http://127.0.0.1:3002",
+    "llm_api_url": "https://api.deepseek.com/chat/completions",
+    "llm_model": "deepseek-chat",
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-chat",
-    "default_style": "贴吧老哥"
+    "default_style": "贴吧老哥",
+    "context_max_msgs": 30,
+    "context_max_age": 600,
+    "auto_reply_enabled": false,
+    "auto_reply_chance": 0.02,
+    "auto_reply_keyword_chance": 0.35,
+    "auto_reply_cooldown": 180,
+    "meme_keywords": [
+        "绷不住",
+        "抽象",
+        "逆天",
+        "典中典",
+        "离谱",
+        "笑死"
+    ],
+    "scheduled_fun_enabled": false,
+    "scheduled_fun_times": [
+        "22:00"
+    ],
+    "daily_style_rotation_enabled": false,
+    "daily_style_announce": true,
+    "group_settings": {
+        "目标群号1": {
+            "default_style": "贴吧老哥",
+            "trigger_word": "触发词",
+            "auto_reply_enabled": false,
+            "auto_reply_chance": 0.02
+        }
+    }
 }

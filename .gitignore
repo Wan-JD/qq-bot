@@ -26,3 +26,6 @@ desktop.ini
 # Logs
 *.log
 logs/
+
+# WorkBuddy runtime memory
+workbuddy_memory.json

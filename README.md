@@ -2,7 +2,7 @@
 
 基于 [AstrBot](https://github.com/Soulter/AstrBot) + [NapCat](https://github.com/NapNeko/NapCatQQ) + 大语言模型 API 的 QQ 群聊机器人插件。
 
-通过 DeepSeek / OpenAI 兼容 API 驱动，支持**多风格切换**、上下文感知、管理员指令控制。
+通过 OpenAI 兼容 API 驱动，支持**多风格切换**、上下文感知、管理员指令控制。
 
 ## 功能特性
 
@@ -96,6 +96,8 @@
     "target_groups": ["目标群号1", "目标群号2"],
     "trigger_word": "触发词",
     "napcat_http_api": "http://127.0.0.1:3002",
+    "llm_api_url": "https://api.deepseek.com/chat/completions",
+    "llm_model": "deepseek-chat",
     "deepseek_api_url": "https://api.deepseek.com/chat/completions",
     "deepseek_model": "deepseek-chat",
     "default_style": "贴吧老哥"
@@ -108,8 +110,10 @@
 | `target_groups` | 目标群聊ID列表 |
 | `trigger_word` | 群聊触发词 |
 | `napcat_http_api` | NapCat HTTP API 地址 |
-| `deepseek_api_url` | LLM API 地址（兼容 OpenAI 格式） |
-| `deepseek_model` | 模型名称 |
+| `llm_api_url` | LLM API 地址（兼容 OpenAI 格式，优先使用） |
+| `llm_model` | 模型名称（优先使用） |
+| `deepseek_api_url` | 旧字段，向后兼容 |
+| `deepseek_model` | 旧字段，向后兼容 |
 | `default_style` | 默认风格名称（对应 prompts/ 下的文件名） |
 
 #### 4.2 创建 `api_key.txt`
@@ -214,6 +218,26 @@ start_qq_bot.bat
 - 每个群保留最近 30 条消息，10 分钟过期
 - 回复和指令都会参考上下文，让内容更贴合当前聊天
 
+
+## 新增玩法
+
+- `/今日总结 [正经|缺德|贴吧]`：按当前群聊上下文生成当天群聊复盘。
+- `/画像 @某人`：根据群内发言样本和统计生成群友画像。
+- 自动接梗：在 `config_local.json` 启用 `auto_reply_enabled` 后，命中热梗关键词时低概率自然冒泡。
+- 定时整活：启用 `scheduled_fun_enabled` 后，可按 `scheduled_fun_times` 定时发一句群聊风格消息。
+- 今日人设轮换：启用 `daily_style_rotation_enabled` 后，每天自动为各群随机切换人设。
+- 点歌式人格：触发 bot 后发送“用温柔学姐说一句 xxx”，可临时用指定人格回复一次。
+- 名场面记录：`/记下来` 保存上一条群聊发言，`/翻旧账 @某人` 随机翻出历史名场面。
+- 黑话词典：`/记梗 词 = 解释` 让 bot 理解群内暗号，后续回复会参考。
+- 群友召唤术：`/召唤 @某人 理由` 生成自然点名话术。
+- 人格混合器：`/融合 毒舌损友 温柔学姐` 生成临时混合人格。
+- 群聊小游戏：`/真心话`、`/大冒险`、`/接龙 开始 词`、`/猜词`。
+- 多群人格隔离：`group_settings` 可为不同群设置不同默认人设、触发词和自动接梗概率。
+- 昵称记忆：`/记昵称 @某人 外号` 后，画像、召唤、排行榜会优先显示外号。
+- 热度排行榜：`/排行榜` 查看最近发言和被 @ 统计。
+
+运行时记忆保存在插件目录的 `workbuddy_memory.json`，该文件已被 `.gitignore` 排除，不会提交到仓库。
+
 ## 更换模型
 
 ### DeepSeek 系列
@@ -222,11 +246,11 @@ start_qq_bot.bat
 
 ```json
 {
-    "deepseek_model": "deepseek-chat"
+    "llm_model": "deepseek-chat"
 }
 ```
 
-API 地址保持不变：`https://api.deepseek.com/chat/completions`
+API 地址保持不变：`https://api.deepseek.com/chat/completions`。旧的 `deepseek_*` 字段仍可使用，但新配置建议优先使用 `llm_*`。
 
 ### 其他兼容 OpenAI 格式的模型
 
@@ -234,8 +258,8 @@ API 地址保持不变：`https://api.deepseek.com/chat/completions`
 
 ```json
 {
-    "deepseek_api_url": "https://api.openai.com/v1/chat/completions",
-    "deepseek_model": "gpt-4o-mini"
+    "llm_api_url": "https://api.openai.com/v1/chat/completions",
+    "llm_model": "gpt-4o-mini"
 }
 ```
 
