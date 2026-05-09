@@ -927,6 +927,33 @@ class WorkBuddyBridge(Star):
             lines.append(f"{prefix}: {text}")
         return "\n".join(lines)
 
+
+    def _clean_incoming_text(self, text: str, self_id: str = None, trigger_word: str = "") -> str:
+        """把 AstrBot/NapCat 的消息文本清理成可匹配指令的纯文本。"""
+        text = str(text or "").strip()
+        if text.startswith("<Event,"):
+            for pattern in (
+                r"Plain\(['\"](.+?)['\"]\)",
+                r"'text':\s*['\"](.+?)['\"]",
+                r'"text":\s*["\'](.+?)["\']',
+                r"'message_str':\s*['\"](.+?)['\"]",
+            ):
+                match = re.search(pattern, text)
+                if match:
+                    text = match.group(1)
+                    break
+            else:
+                return ""
+        text = re.sub(r'\[CQ:reply,id=-?\d+\]\s*', '', text)
+        text = re.sub(r'\[CQ:at,qq=\d+\]\s*', '', text)
+        text = re.sub(r'\[CQ:[^\]]+\]', '', text)
+        if self_id:
+            text = re.sub(rf'\[At:{re.escape(str(self_id))}\]\s*', '', text)
+        text = re.sub(r'\[At:\d+\]\s*', '', text)
+        if trigger_word:
+            text = text.replace(trigger_word, "")
+        return re.sub(r'^[，,、\s]+', '', text).strip()
+
     def _parse_at_qq(self, raw_msg: str, exclude_self_id: str = None) -> list:
         qqs = re.findall(r'\[CQ:at,qq=(\d+)\]', raw_msg)
         if exclude_self_id:
@@ -1256,9 +1283,12 @@ class WorkBuddyBridge(Star):
             except Exception:
                 raw_msg = message
 
+            plain_message = self._clean_incoming_text(message, str(self_id))
+            raw_plain_message = self._clean_incoming_text(raw_msg, str(self_id))
+
             # 记录上下文
             if group_id in TARGET_GROUP_IDS:
-                clean_for_ctx = re.sub(r'\[CQ:[^\]]+\]', '', raw_msg).strip()
+                clean_for_ctx = plain_message or raw_plain_message
                 at_targets_all = self._parse_at_qq(raw_msg)
                 reply_to = self._parse_reply_id(raw_msg)
                 self._record_context(group_id, sender_name, str(user_id), clean_for_ctx, at_targets_all, reply_to)
@@ -1290,25 +1320,18 @@ class WorkBuddyBridge(Star):
 
             if group_id in TARGET_GROUP_IDS:
                 group_trigger = self._group_config(group_id).get("trigger_word", TRIGGER_WORD)
-                if group_trigger in message or has_at or is_at:
+                cleaned_message = self._clean_incoming_text(message, str(self_id), group_trigger)
+                cleaned_raw = self._clean_incoming_text(raw_msg, str(self_id), group_trigger)
+                if group_trigger in message or group_trigger in raw_msg or has_at or is_at:
                     should_process = True
-                    if group_trigger in message:
-                        message = message.replace(group_trigger, "").strip()
-                        message = re.sub(r'^[，,、\s]+', '', message)
-                    if self_id:
-                        message = re.sub(rf'\[CQ:at,qq={self_id}\]\s*', '', raw_msg).strip()
-                        if not message:
-                            message = re.sub(r'\[CQ:[^\]]+\]', '', raw_msg).strip()
-                            message = message.replace(self._group_config(group_id).get("trigger_word", TRIGGER_WORD), "").strip()
-                            message = re.sub(r'^[，,、\s]+', '', message)
+                    message = cleaned_message or cleaned_raw or ""
 
             elif is_private and is_boss:
                 should_process = True
 
             elif is_private and TRIGGER_WORD in message:
                 should_process = True
-                message = message.replace(TRIGGER_WORD, "").strip()
-                message = re.sub(r'^[，,、\s]+', '', message)
+                message = self._clean_incoming_text(message, str(self_id), TRIGGER_WORD)
 
             if not should_process:
                 if group_id in TARGET_GROUP_IDS and self._should_auto_reply(group_id, message):
